@@ -78,8 +78,8 @@ class PixelCanvas(QWidget):
             layer = self.layers[layer_id]
             if layer.category_color:
                 color = layer.category_color
-                return QColor(color.red(), color.green(), color.blue(), 150)
-        return QColor(255, 60, 100, 150)
+                return QColor(color.red(), color.green(), color.blue(), 255)
+        return QColor(0, 0, 0, 150)
     def paintEvent(self, event):
         if not self.original_pixmap:
             return
@@ -527,23 +527,32 @@ class OutlineCheckApp(QMainWindow):
                 if p_val == 4 and (not color_val or not bad_pixel_mask[r, c]):
                     return False
         return True
+    def apply_pattern(self,layer, pattern_type):
+        if pattern_type == "CL":
+            layer.category = "CL"
+            layer.category_color = QColor(115, 0, 115)
+        elif pattern_type == "SC":
+            layer.category = "SC"
+            layer.category_color = QColor(255, 0, 0)
+        elif pattern_type == "OSC":
+            layer.category = "OSC"
+            layer.category_color = QColor(255, 155, 0)
+        elif pattern_type == "OT":
+            layer.category = "OT"
+            layer.category_color = QColor(255, 0, 200)
+        else:
+            layer.category = "CR"
+            layer.category_color = QColor(255, 255, 0)
     def categorize_errors(self, img_np, bad_pixel_mask):
+            """Categorize detected errors into OT, SC, OSC, CR or CL"""
             h, w, _ = img_np.shape
+            # Priorité : CL (4) > SC (3) > OSC (2) > CR (1) > OT (0)
             category_priority = {"CL": 4, "SC": 3, "OSC": 2, "CR": 1, "OT": 0}
+
+            # On ne traite que les pixels qui ne sont pas déjà des Clusters (CL)
             other_layers = [l for l in self.layers if l.category != "CL"]
-            def apply_pattern(layer, pattern_type):
-                if pattern_type == "SC":
-                    layer.category = "SC"
-                    layer.category_color = QColor(255, 10, 10)
-                elif pattern_type == "OSC":
-                    layer.category = "OSC"
-                    layer.category_color = QColor(255, 155, 0)
-                elif pattern_type == "OT":
-                    layer.category = "OT"
-                    layer.category_color = QColor(255, 0, 155)
-                else:
-                    layer.category = "CR"
-                    layer.category_color = QColor(255, 255, 0)
+            
+            # (Patterns OT et SC identiques à votre code...)
             ot_pattern_1 = np.array([[2, 1, 0], [2, 3, 1], [0, 1, 2]])
             ot_pattern_2 = np.array([[2, 1, 0], [1, 3, 1], [0, 2, 2]])
             ot_patterns = [np.rot90(ot_pattern_1, k) for k in range(4)] + [np.rot90(ot_pattern_2, k) for k in range(4)]
@@ -555,19 +564,19 @@ class OutlineCheckApp(QMainWindow):
             for layer in other_layers:
                 x, y = layer.x, layer.y
                 if y < 1 or y >= h - 1 or x < 1 or x >= w - 1:
-                    apply_pattern(layer, "CR")
+                    self.apply_pattern(layer, "CR")
                     continue
                 layer_color = layer.color_key
                 color_mask = np.all(img_np[y-1:y+2, x-1:x+2] == layer_color, axis=-1)
                 bad_mask = color_mask & bad_pixel_mask[y-1:y+2, x-1:x+2]
                 if any(self.check_pattern_match(osc_rot, color_mask, bad_mask) for osc_rot in osc_rotations):
-                    apply_pattern(layer, "OSC")
+                    self.apply_pattern(layer, "OSC")
                     if any(self.check_pattern_match(sc_rot, color_mask, bad_mask) for sc_rot in sc_rotations):
-                        apply_pattern(layer, "SC")
+                        self.apply_pattern(layer, "SC")
                 elif any(self.check_pattern_match(ot_pat, color_mask, bad_mask) for ot_pat in ot_patterns):
-                    apply_pattern(layer, "OT")
+                    self.apply_pattern(layer, "OT")
                 else:
-                    apply_pattern(layer, "CR")
+                    self.apply_pattern(layer, "CR")
             pos_to_layer = {(l.x, l.y): l for l in self.layers}
             staircase_layers = [l for l in self.layers if l.category == "SC"]
             queue = list(staircase_layers)
@@ -580,8 +589,7 @@ class OutlineCheckApp(QMainWindow):
                         if neighbor_pos in pos_to_layer:
                             neighbor = pos_to_layer[neighbor_pos]
                             if neighbor.category in ["OSC", "OT", "CR"]:
-                                neighbor.category = "SC"
-                                neighbor.category_color = QColor(255, 10, 10)
+                                self.apply_pattern(neighbor, "SC")
                                 queue.append(neighbor)
     def analyze_image(self):
             if not self.current_img: return
@@ -635,8 +643,7 @@ class OutlineCheckApp(QMainWindow):
                     lid = len(self.layers)
                     new_layer = ErrorLayer(lid, x, y, color_tuple)
                     if p_type == "CL":
-                        new_layer.category = "CL"
-                        new_layer.category_color = QColor(128, 0, 128)
+                        self.apply_pattern(new_layer, "CL")
                     self.layers.append(new_layer)
                     if (x, y) not in self.pixel_to_layers:
                         self.pixel_to_layers[(x, y)] = []
