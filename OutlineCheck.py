@@ -332,10 +332,10 @@ class OutlineCheckApp(QMainWindow):
         self.layer_tree.itemChanged.connect(self.on_item_visibility_changed)
         sidebar_layout.addWidget(self.layer_tree)
 
-        self.btn_fix = QPushButton(LANGUAGES[self.current_lang]["fix_btn"])
-        self.btn_fix.setObjectName("fixButton")
-        self.btn_fix.clicked.connect(self.fix_selected_layers)
-        sidebar_layout.addWidget(self.btn_fix)
+        # self.btn_fix = QPushButton(LANGUAGES[self.current_lang]["fix_btn"])
+        # self.btn_fix.setObjectName("fixButton")
+        # self.btn_fix.clicked.connect(self.fix_selected_layers)
+        # sidebar_layout.addWidget(self.btn_fix)
 
         self.info_label = QLabel(LANGUAGES[self.current_lang]["info"])
         self.info_label.setStyleSheet("color: #666; font-size: 11px;")
@@ -580,6 +580,11 @@ class OutlineCheckApp(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(lambda: self._history_move(-1))
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self).activated.connect(lambda: self._history_move(1))
         QShortcut(QKeySequence("Ctrl+Y"), self).activated.connect(lambda: self._history_move(1))
+
+        QShortcut(QKeySequence("O"), self).activated.connect(self.toggle_picker_mode)
+        QShortcut(QKeySequence("P"), self).activated.connect(self.toggle_brush_mode)
+        QShortcut(QKeySequence("C"), self).activated.connect(self.open_color_dialog)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.save_image)
 
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Images (*.png *.bmp)")
@@ -911,14 +916,29 @@ class OutlineCheckApp(QMainWindow):
 
         img_copy = self.current_img.copy()
         img_copy.putpixel((x, y), new_color)
+
+        selected_parent_colors = set()
+        root = self.layer_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            parent = root.child(i)
+            if parent.isSelected():
+                color_hex = parent.text(0).split(' ')[0]
+                selected_parent_colors.add(color_hex)
         
-        color_states, expansion_states, parent_states = self._save_tree_state()
-        
+        color_states, expansion_states, parent_states = self._save_tree_state()        
         self.push_history(img_copy)
         
         self.layer_tree.blockSignals(True)
         self.analyze_image()
         self._restore_tree_state(color_states, expansion_states, parent_states)
+
+        root = self.layer_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            parent = root.child(i)
+            color_hex = parent.text(0).split(' ')[0]
+            if color_hex in selected_parent_colors:
+                parent.setSelected(True)
+
         self.layer_tree.blockSignals(False)
         self.update_canvas_views()
 
