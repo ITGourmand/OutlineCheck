@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
     QComboBox,
+    QCheckBox,
 )
 from PyQt6.QtGui import (
     QPixmap,
@@ -52,6 +53,7 @@ LANGUAGES = {
         "toggle_outline_on": "VOIR: COULEURS CONTOUR",
         "toggle_outline_off": "VOIR: TOUTES COULEURS",
         "layer_title": "Calques",
+        "pp_checkbox": "Pixel Perfect",
     },
     "EN": {
         "title": "OUTLINECHECK",
@@ -70,6 +72,7 @@ LANGUAGES = {
         "toggle_outline_on": "VIEW: OUTLINE COLORS",
         "toggle_outline_off": "VIEW: ALL COLORS",
         "layer_title": "Layers",
+        "pp_checkbox": "Pixel Perfect",
     },
 }
 
@@ -663,6 +666,10 @@ class OutlineCheckApp(QMainWindow):
         self.show_only_outlines = True
         self.analyzer = ImageAnalyzer()
         self.analysis_result = AnalysisResult()
+        self.pixel_perfect_mode = False
+        self.last_paint_pos = None
+        self.temp_stroke_layer = None
+        self.active_layer_idx = None
         self._init_ui()
         self._setup_shortcuts()
         self._load_default_state()
@@ -737,6 +744,18 @@ class OutlineCheckApp(QMainWindow):
         self.pipette_header = QLabel(LANGUAGES[self.current_lang]["replacement_header"])
         self.pipette_header.setStyleSheet("color: #888; font-size: 10px; letter-spacing: 1px;")
         layout.addWidget(self.pipette_header)
+
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(self.pipette_header)
+        header_layout.addStretch()
+        
+        self.pp_check = QCheckBox(LANGUAGES[self.current_lang]["pp_checkbox"])
+        self.pp_check.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
+        self.pp_check.toggled.connect(self.toggle_pixel_perfect)
+        header_layout.addWidget(self.pp_check)
+        
+        layout.addLayout(header_layout)
+
 
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -863,6 +882,7 @@ class OutlineCheckApp(QMainWindow):
         self.btn_open.setText(t["open"])
         self.btn_save.setText(t["save"])
         self.pipette_header.setText(t["replacement_header"])
+        self.pp_check.setText(t["pp_checkbox"])
         self.groups_label.setText(t["groups_header"])
         self.info_label.setText(t["info"])
         self.detect_label.setText(t["detect_title"])
@@ -1126,6 +1146,9 @@ class OutlineCheckApp(QMainWindow):
         self._set_tool_mode(picker=False, brush=True)
         self.update_picker_button_ui()
 
+    def toggle_pixel_perfect(self, checked):
+        self.pixel_perfect_mode = checked
+
     def toggle_picker_mode(self):
         new_mode = not self.canvas_left.picker_mode
         self._set_tool_mode(picker=new_mode, brush=False)
@@ -1163,26 +1186,51 @@ class OutlineCheckApp(QMainWindow):
         if self.replacement_color:
             color = (self.replacement_color.red(), self.replacement_color.green(), 
                      self.replacement_color.blue(), self.replacement_color.alpha())
+
+        if not self.pixel_perfect_mode:
+            if target_img.getpixel((x, y)) == color: return
+            target_img.putpixel((x, y), color)
+            self.update_canvas_views_fast()
+            items[0].setIcon(1, IconFactory.create_thumbnail(target_img))
+        else:
+            if not hasattr(self, 'temp_stroke_layer') or self.temp_stroke_layer is None:
+                self.temp_stroke_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             
-        if target_img.getpixel((x, y)) == color: return
-        
-        target_img.putpixel((x, y), color)
-        
-        self.update_canvas_views_fast()
-        items[0].setIcon(1, IconFactory.create_thumbnail(target_img))
+            self.temp_stroke_layer.putpixel((x, y), color)
+            analysis = self.analyzer.analyze(self.temp_stroke_layer)
+            if analysis.layers:
+                for layer_obj in analysis.layers:
+                    self.temp_stroke_layer.putpixel((layer_obj.x, layer_obj.y), (0, 0, 0, 0))
+            
+            self.update_canvas_views_fast()
+            preview_img = Image.alpha_composite(target_img, self.temp_stroke_layer)
+            items[0].setIcon(1, IconFactory.create_thumbnail(preview_img))
 
 
     def on_brush_finished(self):
         if not self.pixel_layers: return
+        if self.pixel_perfect_mode and hasattr(self, 'temp_stroke_layer') and self.temp_stroke_layer:
+            items = self.layers_list.selectedItems()
+            if items:
+                idx = self.layers_list.indexOfTopLevelItem(items[0])
+                target_img = self.pixel_layers[idx]["image"]
+                self.pixel_layers[idx]["image"] = Image.alpha_composite(target_img, self.temp_stroke_layer)
+                self.temp_stroke_layer = None
+                items[0].setIcon(1, IconFactory.create_thumbnail(self.pixel_layers[idx]["image"]))
+        
         self.compose_final_image() 
         self.push_history(self.current_img)
+        self.refresh_analysis()
 
     def update_canvas_views_fast(self):
+        if not self.pixel_layers: return
         base = Image.new("RGBA", self.pixel_layers[0]["image"].size, (0, 0, 0, 0))
         for layer in reversed(self.pixel_layers):
             if layer["visible"]:
                 base = Image.alpha_composite(base, layer["image"])
-        
+        if self.pixel_perfect_mode and hasattr(self, 'temp_stroke_layer') and self.temp_stroke_layer:
+            base = Image.alpha_composite(base, self.temp_stroke_layer)
+            
         self.current_img = base
         pix = self.pil_to_qimage(self.current_img)
         self.canvas_left.set_image(QPixmap.fromImage(pix), self.analysis_result.pixel_to_layers, reset_view=False)
