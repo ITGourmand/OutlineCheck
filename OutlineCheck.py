@@ -429,17 +429,31 @@ class ImageAnalyzer:
         color_count = {}
         img_np = result.img_np
 
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
+        for y in range(h):
+            for x in range(w):
                 color = tuple(img_np[y, x])
                 if color[3] < 10:
                     continue
-                sub_mask = np.all(
-                    img_np[y - 1 : y + 2, x - 1 : x + 2] == color, axis=-1
-                )
+                y_start = max(0, y - 1)
+                y_end = min(h, y + 2)
+                x_start = max(0, x - 1)
+                x_end = min(w, x + 2)
+
+                sub_region = img_np[y_start:y_end, x_start:x_end]
+                sub_mask = np.all(sub_region == color, axis=-1)
+                mask_3x3 = np.zeros((3, 3), dtype=bool)
+                mask_y_offset = 1 - (y - y_start)
+                mask_x_offset = 1 - (x - x_start)
+
+                for dy in range(sub_region.shape[0]):
+                    for dx in range(sub_region.shape[1]):
+                        mask_y = mask_y_offset + dy
+                        mask_x = mask_x_offset + dx
+                        if 0 <= mask_y < 3 and 0 <= mask_x < 3:
+                            mask_3x3[mask_y, mask_x] = sub_mask[dy, dx]
 
                 if any(
-                    self._check_pattern_match_optimized(rot, sub_mask)
+                    self._check_pattern_match_optimized(rot, mask_3x3)
                     for rot in self.cl_rotations
                 ):
                     if color not in color_count:
@@ -447,14 +461,14 @@ class ImageAnalyzer:
                     color_count[color].append((x, y, "CL"))
 
                 if any(
-                    self._check_pattern_match_optimized(rot, sub_mask)
+                    self._check_pattern_match_optimized(rot, mask_3x3)
                     for rot in self.ot_rotations
                 ):
                     if color not in color_count:
                         color_count[color] = []
                     color_count[color].append((x, y, "OT"))
                 elif any(
-                    self._check_pattern_match_optimized(rot, sub_mask)
+                    self._check_pattern_match_optimized(rot, mask_3x3)
                     for rot in self.base_rotations
                 ):
                     if color not in color_count:
@@ -748,8 +762,62 @@ class PixelCanvas(QWidget):
         for i in range(len(self.pen_points) - 1):
             x1, y1 = self.pen_points[i]
             x2, y2 = self.pen_points[i + 1]
-            all_pixels.extend(self.get_line_pixels_for_display(x1, y1, x2, y2))
+
+            if self.parent_app and self.parent_app.pixel_perfect_mode:
+                all_pixels.extend(self.bresenham_line(x1, y1, x2, y2))
+            else:
+                all_pixels.extend(self.get_line_pixels_for_display(x1, y1, x2, y2))
+
         return all_pixels
+
+    def bresenham_line(self, x0, y0, x1, y1):
+        dx = x1 - x0
+        dy = y1 - y0
+        incX = 1 if dx > 0 else (-1 if dx < 0 else 0)
+        incY = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        dx = abs(dx)
+        dy = abs(dy)
+
+        pixels = []
+
+        if dy == 0:
+            x = x0
+            while x != x1 + incX:
+                pixels.append((x, y0))
+                x += incX
+        elif dx == 0:
+            y = y0
+            while y != y1 + incY:
+                pixels.append((x0, y))
+                y += incY
+        elif dx >= dy:
+            slope = 2 * dy
+            error = -dx
+            errorInc = -2 * dx
+            y = y0
+            x = x0
+            while x != x1 + incX:
+                pixels.append((x, y))
+                error += slope
+                if error >= 0:
+                    y += incY
+                    error += errorInc
+                x += incX
+        else:
+            slope = 2 * dx
+            error = -dy
+            errorInc = -2 * dy
+            x = x0
+            y = y0
+            while y != y1 + incY:
+                pixels.append((x, y))
+                error += slope
+                if error >= 0:
+                    x += incX
+                    error += errorInc
+                y += incY
+
+        return pixels
 
     def _compute_bresenham_line(self, x1, y1, x2, y2, perfect_diag=True):
         pixels = [(x1, y1)]
@@ -805,35 +873,7 @@ class PixelCanvas(QWidget):
         return self._compute_bresenham_line(x1, y1, x2, y2, perfect_diag)
 
     def apply_pixel_perfect_filter(self, pixels):
-        try:
-            import numpy as np
-
-            if not self.parent_app or not hasattr(self.parent_app, "analyzer"):
-                return pixels
-
-            if not pixels:
-                return pixels
-
-            max_x = max(p[0] for p in pixels) + 1
-            max_y = max(p[1] for p in pixels) + 1
-            min_x = min(p[0] for p in pixels)
-            min_y = min(p[1] for p in pixels)
-
-            pixel_matrix = np.zeros(
-                (max_y - min_y + 2, max_x - min_x + 2), dtype=np.uint8
-            )
-            for px, py in pixels:
-                pixel_matrix[py - min_y + 1, px - min_x + 1] = 1
-
-            corrected = self.parent_app.analyzer.analyze_matrix(pixel_matrix)
-
-            rows, cols = np.where(corrected == 1)
-            result = [
-                (int(c + min_x - 1), int(r + min_y - 1)) for r, c in zip(rows, cols)
-            ]
-            return result
-        except Exception as e:
-            return pixels
+        return pixels
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
@@ -1363,6 +1403,11 @@ class OutlineCheckApp(QMainWindow):
         modified = False
 
         if self.pixel_perfect_mode:
+            for px, py in touched_pixels:
+                if 0 <= px < width and 0 <= py < height:
+                    img.putpixel((px, py), color)
+                    modified = True
+        else:
             pixel_matrix = np.zeros((height, width), dtype=np.uint8)
             for px, py in touched_pixels:
                 if 0 <= px < width and 0 <= py < height:
@@ -1373,11 +1418,6 @@ class OutlineCheckApp(QMainWindow):
             for x, y in zip(cols, rows):
                 img.putpixel((x, y), color)
                 modified = True
-        else:
-            for px, py in touched_pixels:
-                if 0 <= px < width and 0 <= py < height:
-                    img.putpixel((px, py), color)
-                    modified = True
 
         if modified:
             layer_data["image"] = img
