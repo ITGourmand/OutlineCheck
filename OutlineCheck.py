@@ -1,6 +1,7 @@
 import sys
 import numpy as np
 import copy
+import math
 from PIL import Image
 from PyQt6.QtWidgets import (
     QApplication,
@@ -246,6 +247,30 @@ class IconFactory:
                 painter.setPen(QPen(color, 2))
                 painter.drawPolygon(pts)
 
+        elif name == "pen":
+            silver = QColor("#C0C0C0")
+            dark_silver = QColor("#808080")
+            gold = QColor("#D4AF37")
+
+            painter.setPen(QPen(dark_silver, 1))
+            painter.setBrush(silver)
+            points = [
+                QPoint(32, 55),
+                QPoint(20, 30),
+                QPoint(32, 5),
+                QPoint(44, 30),
+            ]
+            painter.drawPolygon(points)
+
+            painter.setPen(QPen(dark_silver, 2))
+            painter.drawLine(32, 55, 32, 35)
+            painter.setBrush(dark_silver)
+            painter.drawEllipse(30, 32, 4, 4)
+
+            painter.setBrush(gold)
+            painter.setPen(Qt.GlobalColor.transparent)
+            painter.drawRect(28, 5, 8, 10)
+
         painter.end()
         return QIcon(pix)
 
@@ -338,10 +363,9 @@ class IconFactory:
 class ImageAnalyzer:
     CL_PATTERN_1 = np.array([[2, 1, 1], [2, 3, 1], [2, 2, 2]])
     CL_PATTERN_2 = np.array([[1, 1, 2], [1, 3, 2], [2, 2, 2]])
-    BASE_PATTERN = np.array([[2, 1, 0], [2, 3, 1], [0, 2, 2]])
+    OT_PATTERN = np.array([[2, 1, 0], [2, 3, 1], [2, 1, 0]])
 
-    OT_PATTERN_1 = np.array([[2, 1, 0], [2, 3, 1], [0, 1, 2]])
-    OT_PATTERN_2 = np.array([[2, 1, 0], [1, 3, 1], [0, 2, 2]])
+    BASE_PATTERN = np.array([[2, 1, 0], [2, 3, 1], [0, 2, 2]])
 
     OSC_PATTERN_1 = np.array([[2, 4, 0], [2, 3, 2], [0, 2, 2]])
     OSC_PATTERN_2 = np.array([[2, 2, 0], [2, 3, 4], [0, 2, 2]])
@@ -351,11 +375,9 @@ class ImageAnalyzer:
         self.cl_rotations = [np.rot90(self.CL_PATTERN_1, k) for k in range(4)] + [
             np.rot90(self.CL_PATTERN_2, k) for k in range(4)
         ]
-        self.base_rotations = [np.rot90(self.BASE_PATTERN, k) for k in range(4)]
+        self.ot_rotations = [np.rot90(self.OT_PATTERN, k) for k in range(4)]
 
-        self.ot_patterns = [np.rot90(self.OT_PATTERN_1, k) for k in range(4)] + [
-            np.rot90(self.OT_PATTERN_2, k) for k in range(4)
-        ]
+        self.base_rotations = [np.rot90(self.BASE_PATTERN, k) for k in range(4)]
 
         self.osc_rotations = [np.rot90(self.OSC_PATTERN_1, k) for k in range(4)] + [
             np.rot90(self.OSC_PATTERN_2, k) for k in range(4)
@@ -372,7 +394,7 @@ class ImageAnalyzer:
         for i in range(len(rows)):
             y, x = rows[i], cols[i]
             if 0 < y < h - 1 and 0 < x < w - 1:
-                sub_mask = matrix[y - 1 : y + 2, x - 1 : x + 2]
+                sub_mask = corrected_matrix[y - 1 : y + 2, x - 1 : x + 2]
                 if any(
                     self._check_pattern_match_optimized(rot, sub_mask)
                     for rot in self.base_rotations
@@ -416,30 +438,40 @@ class ImageAnalyzer:
                     img_np[y - 1 : y + 2, x - 1 : x + 2] == color, axis=-1
                 )
 
-                is_cl = any(
+                if any(
                     self._check_pattern_match_optimized(rot, sub_mask)
                     for rot in self.cl_rotations
-                )
-
-                if is_cl:
+                ):
                     if color not in color_count:
                         color_count[color] = []
                     color_count[color].append((x, y, "CL"))
-                else:
-                    is_pattern = any(
-                        self._check_pattern_match_optimized(rot, sub_mask)
-                        for rot in self.base_rotations
-                    )
-                    if is_pattern:
-                        if color not in color_count:
-                            color_count[color] = []
-                        color_count[color].append((x, y, "BAD"))
+
+                if any(
+                    self._check_pattern_match_optimized(rot, sub_mask)
+                    for rot in self.ot_rotations
+                ):
+                    if color not in color_count:
+                        color_count[color] = []
+                    color_count[color].append((x, y, "OT"))
+                elif any(
+                    self._check_pattern_match_optimized(rot, sub_mask)
+                    for rot in self.base_rotations
+                ):
+                    if color not in color_count:
+                        color_count[color] = []
+                    color_count[color].append((x, y, "BAD"))
         for color_tuple, pixels in color_count.items():
             for x, y, p_type in pixels:
                 lid = len(result.layers)
                 new_layer = ErrorLayer(lid, x, y, color_tuple)
+
                 if p_type == "CL":
                     self._apply_category_style(new_layer, "CL")
+                elif p_type == "OT":
+                    self._apply_category_style(new_layer, "OT")
+                else:
+                    self._apply_category_style(new_layer, "CR")
+
                 result.layers.append(new_layer)
 
                 if (x, y) not in result.pixel_to_layers:
@@ -492,7 +524,7 @@ class ImageAnalyzer:
 
     def _categorize_errors(self, layers, img_np, bad_pixel_mask):
         h, w, _ = img_np.shape
-        other_layers = [l for l in layers if l.category != "CL"]
+        other_layers = [l for l in layers if l.category != "CL" and l.category != "OT"]
         for layer in other_layers:
             x, y = layer.x, layer.y
             if y < 1 or y >= h - 1 or x < 1 or x >= w - 1:
@@ -515,11 +547,6 @@ class ImageAnalyzer:
                     for rot in self.sc_rotations
                 ):
                     self._apply_category_style(layer, "SC")
-            elif any(
-                self._check_full_pattern_match(rot, color_mask, bad_mask)
-                for rot in self.ot_patterns
-            ):
-                self._apply_category_style(layer, "OT")
             else:
                 self._apply_category_style(layer, "CR")
         pos_to_layer = {(l.x, l.y): l for l in layers}
@@ -535,7 +562,7 @@ class ImageAnalyzer:
                     neighbor_pos = (current.x + dx, current.y + dy)
                     if neighbor_pos in pos_to_layer:
                         neighbor = pos_to_layer[neighbor_pos]
-                        if neighbor.category in ["OSC", "OT", "CR"]:
+                        if neighbor.category in ["OSC", "CR"]:
                             self._apply_category_style(neighbor, "SC")
                             queue.append(neighbor)
 
@@ -546,8 +573,9 @@ class PixelCanvas(QWidget):
     brushPainted = pyqtSignal(int, int)
     brushFinished = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, parent=None):
         super().__init__()
+        self.parent_app = parent
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -570,7 +598,13 @@ class PixelCanvas(QWidget):
         self.drag_mode = False
         self.selection_mode = False
         self.current_selection = set()
+        self.pen_mode = False
+        self.pen_points = []
+        self.pen_drag_index = None
+        self.selected_point = None
         self.checker_brush = self._create_checker_brush()
+        self.pen_preview_pixmap = None
+        self.pen_color = (255, 0, 0, 255)
 
     def _create_checker_brush(self):
         size = 20
@@ -638,6 +672,61 @@ class PixelCanvas(QWidget):
                 sy = int((py - self.offset_y) * self.zoom)
                 sz = int(self.zoom)
                 painter.drawRect(sx, sy, sz, sz)
+
+        if self.pen_mode and len(self.pen_points) > 1:
+            try:
+                all_pixels = self.get_pixels_on_pen_line_for_display()
+
+                if self.parent_app and self.parent_app.pixel_perfect_mode:
+                    all_pixels = self.apply_pixel_perfect_filter(all_pixels)
+
+                preview_color = QColor(255, 0, 0, 255)
+                if self.parent_app and self.parent_app.replacement_color:
+                    c = self.parent_app.replacement_color
+                    preview_color = QColor(c.red(), c.green(), c.blue(), 255)
+
+                for px, py in all_pixels:
+                    screen_px = int((px - self.offset_x) * self.zoom)
+                    screen_py = int((py - self.offset_y) * self.zoom)
+                    painter.fillRect(
+                        screen_px,
+                        screen_py,
+                        int(self.zoom),
+                        int(self.zoom),
+                        preview_color,
+                    )
+            except Exception:
+                pass
+
+        if self.pen_mode and len(self.pen_points) > 0:
+            brush_color = QColor(0, 255, 0, 255)
+
+            for px, py in self.pen_points:
+                sx = int((px - self.offset_x) * self.zoom)
+                sy = int((py - self.offset_y) * self.zoom)
+                sz = int(self.zoom)
+
+                painter.fillRect(sx, sy, sz, sz, brush_color)
+
+            if len(self.pen_points) > 1:
+                pen_color = QColor(0, 255, 0)
+                line_width = max(1.0, self.zoom / 16.0)
+
+                pen = QPen(pen_color, line_width)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+
+                for i in range(len(self.pen_points) - 1):
+                    p1 = self.pen_points[i]
+                    p2 = self.pen_points[i + 1]
+
+                    x1 = int((p1[0] - self.offset_x) * self.zoom + self.zoom / 2)
+                    y1 = int((p1[1] - self.offset_y) * self.zoom + self.zoom / 2)
+                    x2 = int((p2[0] - self.offset_x) * self.zoom + self.zoom / 2)
+                    y2 = int((p2[1] - self.offset_y) * self.zoom + self.zoom / 2)
+
+                    painter.drawLine(x1, y1, x2, y2)
+
         painter.end()
 
     def _draw_error_overlay(self, pixmap):
@@ -650,6 +739,101 @@ class PixelCanvas(QWidget):
                         color = QColor(0, 200, 255, 200)
                     temp_painter.fillRect(x, y, 1, 1, color)
         temp_painter.end()
+
+    def get_pixels_on_pen_line_for_display(self):
+        if len(self.pen_points) < 2:
+            return []
+
+        all_pixels = []
+        for i in range(len(self.pen_points) - 1):
+            x1, y1 = self.pen_points[i]
+            x2, y2 = self.pen_points[i + 1]
+            all_pixels.extend(self.get_line_pixels_for_display(x1, y1, x2, y2))
+        return all_pixels
+
+    def _compute_bresenham_line(self, x1, y1, x2, y2, perfect_diag=True):
+        pixels = [(x1, y1)]
+        delta_x = x2 - x1
+        delta_y = y2 - y1
+        step_y = 1 if delta_y > 0 else -1
+        delta_y = abs(delta_y)
+        step_x = 1 if delta_x > 0 else -1
+        delta_x = abs(delta_x)
+        two_delta_y = 2 * delta_y
+        two_delta_x = 2 * delta_x
+        curr_x, curr_y = x1, y1
+
+        if two_delta_x >= two_delta_y:
+            error = delta_x
+            error_prev = delta_x
+            for _ in range(delta_x):
+                curr_x += step_x
+                error += two_delta_y
+                if error > two_delta_x:
+                    curr_y += step_y
+                    error -= two_delta_x
+                    if error + error_prev < two_delta_x:
+                        pixels.append((curr_x, curr_y - step_y))
+                    elif error + error_prev > two_delta_x:
+                        pixels.append((curr_x - step_x, curr_y))
+                    elif not perfect_diag:
+                        pixels.append((curr_x, curr_y - step_y))
+                        pixels.append((curr_x - step_x, curr_y))
+                pixels.append((curr_x, curr_y))
+                error_prev = error
+        else:
+            error = delta_y
+            error_prev = delta_y
+            for _ in range(delta_y):
+                curr_y += step_y
+                error += two_delta_x
+                if error > two_delta_y:
+                    curr_x += step_x
+                    error -= two_delta_y
+                    if error + error_prev < two_delta_y:
+                        pixels.append((curr_x - step_x, curr_y))
+                    elif error + error_prev > two_delta_y:
+                        pixels.append((curr_x, curr_y - step_y))
+                    elif not perfect_diag:
+                        pixels.append((curr_x - step_x, curr_y))
+                        pixels.append((curr_x, curr_y - step_y))
+                pixels.append((curr_x, curr_y))
+                error_prev = error
+        return pixels
+
+    def get_line_pixels_for_display(self, x1, y1, x2, y2, perfect_diag=True):
+        return self._compute_bresenham_line(x1, y1, x2, y2, perfect_diag)
+
+    def apply_pixel_perfect_filter(self, pixels):
+        try:
+            import numpy as np
+
+            if not self.parent_app or not hasattr(self.parent_app, "analyzer"):
+                return pixels
+
+            if not pixels:
+                return pixels
+
+            max_x = max(p[0] for p in pixels) + 1
+            max_y = max(p[1] for p in pixels) + 1
+            min_x = min(p[0] for p in pixels)
+            min_y = min(p[1] for p in pixels)
+
+            pixel_matrix = np.zeros(
+                (max_y - min_y + 2, max_x - min_x + 2), dtype=np.uint8
+            )
+            for px, py in pixels:
+                pixel_matrix[py - min_y + 1, px - min_x + 1] = 1
+
+            corrected = self.parent_app.analyzer.analyze_matrix(pixel_matrix)
+
+            rows, cols = np.where(corrected == 1)
+            result = [
+                (int(c + min_x - 1), int(r + min_y - 1)) for r, c in zip(rows, cols)
+            ]
+            return result
+        except Exception as e:
+            return pixels
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
@@ -666,15 +850,39 @@ class PixelCanvas(QWidget):
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent):
+
+        x = int(event.position().x() / self.zoom + self.offset_x)
+        y = int(event.position().y() / self.zoom + self.offset_y)
+
+        if self.pen_mode:
+            if event.button() == Qt.MouseButton.LeftButton:
+                for i, pt in enumerate(self.pen_points):
+                    if pt == (x, y):
+                        self.pen_drag_index = i
+                        self.selected_point = (x, y)
+                        break
+                if self.pen_drag_index is None:
+                    if not self.pen_points or self.pen_points[-1] != (x, y):
+                        self.pen_points.append((x, y))
+                        self.pen_drag_index = len(self.pen_points) - 1
+
+                self.update()
+                return
+
+            elif event.button() == Qt.MouseButton.RightButton:
+                for i, pt in enumerate(self.pen_points):
+                    if pt == (x, y):
+                        self.pen_points.pop(i)
+                        self.brushFinished.emit()
+                        self.update()
+                        return
+
         if self.drag_mode or event.button() == Qt.MouseButton.RightButton:
             self.is_dragging = True
             self.drag_start = event.globalPosition().toPoint()
             self.drag_offset_start = (self.offset_x, self.offset_y)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
-
-        x = int(event.position().x() / self.zoom + self.offset_x)
-        y = int(event.position().y() / self.zoom + self.offset_y)
 
         if self.selection_mode and event.button() == Qt.MouseButton.LeftButton:
             modifiers = event.modifiers()
@@ -714,6 +922,14 @@ class PixelCanvas(QWidget):
             self.offset_y = self.drag_offset_start[1] - delta.y() / self.zoom
             self.update()
             return
+        if self.pen_mode:
+            x = int(event.position().x() / self.zoom + self.offset_x)
+            y = int(event.position().y() / self.zoom + self.offset_y)
+
+            if self.pen_drag_index is not None:
+                self.pen_points[self.pen_drag_index] = (x, y)
+                self.update()
+            return
 
         if not self.drag_mode:
             if self.picker_mode:
@@ -743,6 +959,21 @@ class PixelCanvas(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent):
         self.is_dragging = False
         self.last_brush_pos = None
+        self.pen_drag_index = None
+
+        if self.pen_mode and event.button() == Qt.MouseButton.LeftButton:
+            x = int(event.position().x() / self.zoom + self.offset_x)
+            y = int(event.position().y() / self.zoom + self.offset_y)
+            if not self.pen_points or (
+                self.selected_point == (x, y)
+                and self.pen_points[-1] != (x, y)
+                and self.pen_points[-2] != (x, y)
+            ):
+                print(
+                    f"Adding point ({x}, {y}) to pen points. et selected_point: {self.selected_point}"
+                )
+                self.pen_points.append((x, y))
+                self.update()
 
         if self.brush_mode and event.button() == Qt.MouseButton.LeftButton:
             self.brushFinished.emit()
@@ -757,26 +988,26 @@ class PixelCanvas(QWidget):
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _interpolate_line(self, p1, p2):
-        x1, y1 = p1.x(), p1.y()
-        x2, y2 = p2.x(), p2.y()
+        curr_x, curr_y = p1.x(), p1.y()
+        target_x, target_y = p2.x(), p2.y()
 
-        dx = abs(x2 - x1)
-        dy = abs(y2 - y1)
-        sx = 1 if x1 < x2 else -1
-        sy = 1 if y1 < y2 else -1
-        err = dx - dy
+        delta_x = abs(target_x - curr_x)
+        delta_y = abs(target_y - curr_y)
+        step_x = 1 if curr_x < target_x else -1
+        step_y = 1 if curr_y < target_y else -1
+        error = delta_x - delta_y
 
         while True:
-            self.brushPainted.emit(x1, y1)
-            if x1 == x2 and y1 == y2:
+            self.brushPainted.emit(curr_x, curr_y)
+            if curr_x == target_x and curr_y == target_y:
                 break
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x1 += sx
-            if e2 < dx:
-                err += dx
-                y1 += sy
+            error_times_2 = 2 * error
+            if error_times_2 > -delta_y:
+                error -= delta_y
+                curr_x += step_x
+            if error_times_2 < delta_x:
+                error += delta_x
+                curr_y += step_y
 
 
 class OutlineCheckApp(QMainWindow):
@@ -796,9 +1027,9 @@ class OutlineCheckApp(QMainWindow):
         self.analyzer = ImageAnalyzer()
         self.analysis_result = AnalysisResult()
         self.pixel_perfect_mode = False
-        self.last_paint_pos = None
+        self.last_brush_position = None
         self.temp_stroke_layer = None
-        self.active_layer_idx = None
+        self.active_layer_index = None
         self._init_ui()
         self._setup_shortcuts()
         self._load_default_state()
@@ -909,7 +1140,6 @@ class OutlineCheckApp(QMainWindow):
         self.btn_select.setIcon(IconFactory.create_selection_icon())
         self.btn_select.setFixedSize(48, 48)
         self.btn_select.setObjectName("toolBtn")
-        self.btn_select.setToolTip("Outil Sélection (S)\nCtrl+C: Copier\nCtrl+V: Coller")
         self.btn_select.clicked.connect(self.toggle_selection_mode)
         row.addWidget(self.btn_select)
 
@@ -920,6 +1150,14 @@ class OutlineCheckApp(QMainWindow):
         self.btn_eye_dropper.setIconSize(QSize(28, 28))
         self.btn_eye_dropper.clicked.connect(self.toggle_picker_mode)
         row.addWidget(self.btn_eye_dropper)
+
+        self.btn_pen = QPushButton()
+        self.btn_pen.setFixedSize(48, 48)
+        self.btn_pen.setObjectName("toolBtn")
+        self.btn_pen.setIcon(IconFactory.create_tool_icon("pen"))
+        self.btn_pen.setIconSize(QSize(32, 32))
+        self.btn_pen.clicked.connect(self.toggle_pen_mode)
+        row.addWidget(self.btn_pen)
 
         row.addStretch()
         layout.addLayout(row)
@@ -938,7 +1176,9 @@ class OutlineCheckApp(QMainWindow):
         self.btn_trans.setIconSize(QSize(12, 12))
         self.btn_trans.clicked.connect(self.reset_to_transparent)
         margin = 2
-        self.btn_trans.move(self.btn_color_preview.width() - self.btn_trans.width() - margin, margin)
+        self.btn_trans.move(
+            self.btn_color_preview.width() - self.btn_trans.width() - margin, margin
+        )
 
         row1.addStretch()
         row1.addWidget(self.btn_color_preview)
@@ -956,7 +1196,7 @@ class OutlineCheckApp(QMainWindow):
         left_layout = QVBoxLayout(left_container)
         self.detect_label = QLabel(LANGUAGES[self.current_lang]["detect_title"])
         left_layout.addWidget(self.detect_label)
-        self.canvas_left = PixelCanvas()
+        self.canvas_left = PixelCanvas(parent=self)
         self.canvas_left.pixelSelected.connect(self.select_layer_by_id)
         self.canvas_left.colorPicked.connect(self.set_active_color)
         self.canvas_left.brushPainted.connect(
@@ -1029,6 +1269,124 @@ class OutlineCheckApp(QMainWindow):
         self.current_img = default_img
         self.add_layer(name="Base Image", image=default_img)
 
+    def _compute_bresenham_line(self, x1, y1, x2, y2, perfect_diag=True):
+        pixels = [(x1, y1)]
+        delta_x = x2 - x1
+        delta_y = y2 - y1
+        step_y = 1 if delta_y > 0 else -1
+        delta_y = abs(delta_y)
+        step_x = 1 if delta_x > 0 else -1
+        delta_x = abs(delta_x)
+        two_delta_y = 2 * delta_y
+        two_delta_x = 2 * delta_x
+        curr_x, curr_y = x1, y1
+
+        if two_delta_x >= two_delta_y:
+            error = delta_x
+            error_prev = delta_x
+            for _ in range(delta_x):
+                curr_x += step_x
+                error += two_delta_y
+                if error > two_delta_x:
+                    curr_y += step_y
+                    error -= two_delta_x
+                    if error + error_prev < two_delta_x:
+                        pixels.append((curr_x, curr_y - step_y))
+                    elif error + error_prev > two_delta_x:
+                        pixels.append((curr_x - step_x, curr_y))
+                    elif not perfect_diag:
+                        pixels.append((curr_x, curr_y - step_y))
+                        pixels.append((curr_x - step_x, curr_y))
+                pixels.append((curr_x, curr_y))
+                error_prev = error
+        else:
+            error = delta_y
+            error_prev = delta_y
+            for _ in range(delta_y):
+                curr_y += step_y
+                error += two_delta_x
+                if error > two_delta_y:
+                    curr_x += step_x
+                    error -= two_delta_y
+                    if error + error_prev < two_delta_y:
+                        pixels.append((curr_x - step_x, curr_y))
+                    elif error + error_prev > two_delta_y:
+                        pixels.append((curr_x, curr_y - step_y))
+                    elif not perfect_diag:
+                        pixels.append((curr_x - step_x, curr_y))
+                        pixels.append((curr_x, curr_y - step_y))
+                pixels.append((curr_x, curr_y))
+                error_prev = error
+        return pixels
+
+    def get_pixels_on_pen_line(self):
+        if len(self.canvas_left.pen_points) < 2:
+            return set()
+
+        all_pixels = set()
+        points = self.canvas_left.pen_points
+
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
+            all_pixels.update(self.get_line_pixels(x1, y1, x2, y2))
+        return all_pixels
+
+    def get_line_pixels(self, x1, y1, x2, y2, perfect_diag=True):
+        return self._compute_bresenham_line(x1, y1, x2, y2, perfect_diag)
+
+    def apply_pen_collision(self):
+        if len(self.canvas_left.pen_points) < 2:
+            return
+
+        selected_items = self.layer_tree.selectedItems()
+        if selected_items:
+            item = selected_items[0]
+            for i, layer in enumerate(self.pixel_layers):
+                if layer["name"] == item.text(0):
+                    self.active_layer_index = i
+                    break
+
+        if self.active_layer_index is None and len(self.pixel_layers) > 0:
+            self.active_layer_index = 0
+
+        if self.active_layer_index is None or self.active_layer_index >= len(
+            self.pixel_layers
+        ):
+            return
+
+        touched_pixels = self.get_pixels_on_pen_line()
+        layer_data = self.pixel_layers[self.active_layer_index]
+        img = layer_data["image"].copy()
+        width, height = img.size
+        color = self._get_active_color_tuple()
+        modified = False
+
+        if self.pixel_perfect_mode:
+            pixel_matrix = np.zeros((height, width), dtype=np.uint8)
+            for px, py in touched_pixels:
+                if 0 <= px < width and 0 <= py < height:
+                    pixel_matrix[py, px] = 1
+
+            corrected_matrix = self.analyzer.analyze_matrix(pixel_matrix)
+            rows, cols = np.where(corrected_matrix == 1)
+            for x, y in zip(cols, rows):
+                img.putpixel((x, y), color)
+                modified = True
+        else:
+            for px, py in touched_pixels:
+                if 0 <= px < width and 0 <= py < height:
+                    img.putpixel((px, py), color)
+                    modified = True
+
+        if modified:
+            layer_data["image"] = img
+            self.canvas_left.pen_points = []
+            self.compose_final_image()
+            self.push_history()
+            self.refresh_analysis()
+            self.canvas_left.update()
+
     def _setup_shortcuts(self):
         shortcuts = {
             "Ctrl+Z": lambda: self._history_move(-1),
@@ -1036,13 +1394,16 @@ class OutlineCheckApp(QMainWindow):
             "Ctrl+Y": lambda: self._history_move(1),
             "Ctrl+S": self.save_image,
             "Ctrl+C": self.copy_selection,
+            "Ctrl+X": self.cut_selection,
             "Ctrl+V": self.paste_selection,
+            "Delete": self.del_selection,
             "Ctrl+D": self.deselect_all,
             "S": self.toggle_selection_mode,
             "O": self.toggle_picker_mode,
             "P": self.toggle_brush_mode,
             "C": self.open_color_dialog,
             "D": self.reset_to_transparent,
+            "L": self.apply_pen_collision,
         }
         for key, func in shortcuts.items():
             QShortcut(QKeySequence(key), self).activated.connect(func)
@@ -1073,8 +1434,8 @@ class OutlineCheckApp(QMainWindow):
         self.btn_select.setToolTip(lang["tooltip_select"])
         self.btn_eye_dropper.setToolTip(lang["tooltip_pipette"])
         self.btn_trans.setToolTip(lang["tooltip_nocolor"])
-        
-        if hasattr(self, 'layer_buttons'):
+
+        if hasattr(self, "layer_buttons"):
             self.layer_buttons["add"].setToolTip(lang["tooltip_add"])
             self.layer_buttons["del"].setToolTip(lang["tooltip_del"])
             self.layer_buttons["merge"].setToolTip(lang["tooltip_merge"])
@@ -1157,15 +1518,15 @@ class OutlineCheckApp(QMainWindow):
         item = self.layers_list.currentItem()
         if not item:
             return
-        idx = self.layers_list.indexOfTopLevelItem(item)
-        new_idx = idx + delta
-        if 0 <= new_idx < len(self.pixel_layers):
-            self.pixel_layers[idx], self.pixel_layers[new_idx] = (
-                self.pixel_layers[new_idx],
-                self.pixel_layers[idx],
+        current_index = self.layers_list.indexOfTopLevelItem(item)
+        new_index = current_index + delta
+        if 0 <= new_index < len(self.pixel_layers):
+            self.pixel_layers[current_index], self.pixel_layers[new_index] = (
+                self.pixel_layers[new_index],
+                self.pixel_layers[current_index],
             )
             self.update_layers_ui()
-            self.layers_list.setCurrentItem(self.layers_list.topLevelItem(new_idx))
+            self.layers_list.setCurrentItem(self.layers_list.topLevelItem(new_index))
             self.compose_final_image()
             self.push_history()
 
@@ -1174,24 +1535,24 @@ class OutlineCheckApp(QMainWindow):
         if len(selected) < 2:
             return
 
-        indices = sorted(
+        selected_indices = sorted(
             [self.layers_list.indexOfTopLevelItem(i) for i in selected], reverse=True
         )
-        if not indices:
+        if not selected_indices:
             return
 
-        base_idx = indices[0]
-        base_layer = self.pixel_layers[base_idx]
-        new_img = base_layer["image"].copy()
-        for i in range(1, len(indices)):
-            new_img = Image.alpha_composite(
-                new_img, self.pixel_layers[indices[i]]["image"]
+        base_index = selected_indices[0]
+        base_layer = self.pixel_layers[base_index]
+        merged_image = base_layer["image"].copy()
+        for index_offset in range(1, len(selected_indices)):
+            merged_image = Image.alpha_composite(
+                merged_image, self.pixel_layers[selected_indices[index_offset]]["image"]
             )
 
-        base_layer["image"] = new_img
+        base_layer["image"] = merged_image
         base_layer["name"] = "Merged Layer"
-        for idx in indices[1:]:
-            self.pixel_layers.pop(idx)
+        for layer_index in selected_indices[1:]:
+            self.pixel_layers.pop(layer_index)
 
         self.update_layers_ui()
         self.compose_final_image()
@@ -1241,36 +1602,49 @@ class OutlineCheckApp(QMainWindow):
             "CL": "Cluster",
         }
 
-        for color in self.analysis_result.unique_colors:
-            if color[3] < 10:
+        for color_array in self.analysis_result.unique_colors:
+            if color_array[3] < 10:
                 continue
-            color_tuple = tuple(color)
-            color_layers = [
-                l for l in self.analysis_result.layers if l.color_key == color_tuple
+            color_tuple = tuple(color_array)
+            layers_with_color = [
+                layer
+                for layer in self.analysis_result.layers
+                if layer.color_key == color_tuple
             ]
-            if not color_layers:
+            if not layers_with_color:
                 continue
 
-            color_hex = "#%02x%02x%02x" % (color[0], color[1], color[2])
-            parent = QTreeWidgetItem(self.layer_tree)
-            parent.setText(0, f"{color_hex} ({len(color_layers)})")
-            parent.setData(0, Qt.ItemDataRole.UserRole + 1, color_tuple)
+            color_hex = "#%02x%02x%02x" % (
+                color_array[0],
+                color_array[1],
+                color_array[2],
+            )
+            color_parent_item = QTreeWidgetItem(self.layer_tree)
+            color_parent_item.setText(0, f"{color_hex} ({len(layers_with_color)})")
+            color_parent_item.setData(0, Qt.ItemDataRole.UserRole + 1, color_tuple)
 
-            pix = QPixmap(16, 16)
-            pix.fill(QColor(*color))
-            parent.setIcon(0, QIcon(pix))
+            color_pixmap = QPixmap(16, 16)
+            color_pixmap.fill(QColor(*color_array))
+            color_parent_item.setIcon(0, QIcon(color_pixmap))
 
-            for layer in color_layers:
-                child = QTreeWidgetItem(parent)
-                cat_name = category_names.get(layer.category, layer.category)
-                child.setText(0, f"{cat_name} {layer.id} ({layer.x}, {layer.y})")
-                child.setData(0, Qt.ItemDataRole.UserRole, layer.id)
-                child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                child.setCheckState(0, Qt.CheckState.Unchecked)
+            for error_layer in layers_with_color:
+                error_child_item = QTreeWidgetItem(color_parent_item)
+                category_display_name = category_names.get(
+                    error_layer.category, error_layer.category
+                )
+                error_child_item.setText(
+                    0,
+                    f"{category_display_name} {error_layer.id} ({error_layer.x}, {error_layer.y})",
+                )
+                error_child_item.setData(0, Qt.ItemDataRole.UserRole, error_layer.id)
+                error_child_item.setFlags(
+                    error_child_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                error_child_item.setCheckState(0, Qt.CheckState.Unchecked)
 
-                cat_pix = QPixmap(12, 12)
-                cat_pix.fill(layer.category_color)
-                child.setIcon(0, QIcon(cat_pix))
+                category_pixmap = QPixmap(12, 12)
+                category_pixmap.fill(error_layer.category_color)
+                error_child_item.setIcon(0, QIcon(category_pixmap))
 
         self.apply_tree_filter()
         self.layer_tree.blockSignals(False)
@@ -1278,13 +1652,15 @@ class OutlineCheckApp(QMainWindow):
 
     def apply_tree_filter(self):
         root = self.layer_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            color_tuple = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        for parent_index in range(root.childCount()):
+            tree_item = root.child(parent_index)
+            color_tuple = tree_item.data(0, Qt.ItemDataRole.UserRole + 1)
             if self.show_only_outlines:
-                item.setHidden(color_tuple not in self.analysis_result.outline_colors)
+                tree_item.setHidden(
+                    color_tuple not in self.analysis_result.outline_colors
+                )
             else:
-                item.setHidden(False)
+                tree_item.setHidden(False)
 
     def on_item_visibility_changed(self, item, column):
         if item.parent() is not None:
@@ -1292,13 +1668,14 @@ class OutlineCheckApp(QMainWindow):
 
     def on_selection_changed(self):
         root = self.layer_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            parent = root.child(i)
-            has_selected = any(
-                parent.child(j).isSelected() for j in range(parent.childCount())
+        for parent_index in range(root.childCount()):
+            parent_item = root.child(parent_index)
+            has_child_selected = any(
+                parent_item.child(child_index).isSelected()
+                for child_index in range(parent_item.childCount())
             )
-            if has_selected:
-                parent.setSelected(True)
+            if has_child_selected:
+                parent_item.setSelected(True)
         self.update_canvas_views()
 
     def handle_selection_draw(self, x, y):
@@ -1341,57 +1718,64 @@ class OutlineCheckApp(QMainWindow):
     def update_canvas_views(self):
         if not self.current_img:
             return
-        pix = self.pil_to_qimage(self.current_img)
-        pix = QPixmap.fromImage(pix)
+        composed_image = self.pil_to_qimage(self.current_img)
+        composed_pixmap = QPixmap.fromImage(composed_image)
 
-        visible, selected = set(), set()
+        visible_layers, selected_layers = set(), set()
         root = self.layer_tree.invisibleRootItem()
 
-        for i in range(root.childCount()):
-            parent = root.child(i)
-            is_parent_selected = parent.isSelected()
+        for parent_index in range(root.childCount()):
+            parent_item = root.child(parent_index)
+            is_parent_selected = parent_item.isSelected()
 
-            for j in range(parent.childCount()):
-                child = parent.child(j)
-                lid = child.data(0, Qt.ItemDataRole.UserRole)
-                if child.checkState(0) == Qt.CheckState.Checked:
-                    visible.add(lid)
+            for child_index in range(parent_item.childCount()):
+                child_item = parent_item.child(child_index)
+                layer_id = child_item.data(0, Qt.ItemDataRole.UserRole)
+                if child_item.checkState(0) == Qt.CheckState.Checked:
+                    visible_layers.add(layer_id)
                 elif is_parent_selected:
-                    visible.add(lid)
-                if child.isSelected():
-                    selected.add(lid)
+                    visible_layers.add(layer_id)
+                if child_item.isSelected():
+                    selected_layers.add(layer_id)
 
-        self.canvas_left.visible_layers = visible
-        self.canvas_left.selected_layers = selected
+        self.canvas_left.visible_layers = visible_layers
+        self.canvas_left.selected_layers = selected_layers
         self.canvas_left.set_layers(self.analysis_result.layers)
         self.canvas_left.set_image(
-            pix, self.analysis_result.pixel_to_layers, reset_view=False
+            composed_pixmap, self.analysis_result.pixel_to_layers, reset_view=False
         )
 
     def update_picker_button_ui(self):
-        size = 48
-        pix = QPixmap(size, size)
-        pix.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pix)
+        button_size = 48
+        button_pixmap = QPixmap(button_size, button_size)
+        button_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(button_pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect_size = 40
-        offset = (size - rect_size) // 2
+        rect_offset = (button_size - rect_size) // 2
 
         if self.replacement_color is None:
             painter.setBrush(QColor(240, 240, 240))
             painter.setPen(QPen(QColor(180, 180, 180), 1))
-            painter.drawRoundedRect(offset - 2, offset, rect_size, rect_size, 8, 8)
+            painter.drawRoundedRect(
+                rect_offset - 2, rect_offset, rect_size, rect_size, 8, 8
+            )
             painter.setPen(QPen(Qt.GlobalColor.red, 3))
             painter.drawLine(
-                offset + 3, offset + 5, offset + rect_size - 7, offset + rect_size - 5
+                rect_offset + 3,
+                rect_offset + 5,
+                rect_offset + rect_size - 7,
+                rect_offset + rect_size - 5,
             )
         else:
             painter.setBrush(self.replacement_color)
             painter.setPen(QPen(Qt.GlobalColor.white, 2))
-            painter.drawRoundedRect(offset - 2, offset, rect_size, rect_size, 8, 8)
+            painter.drawRoundedRect(
+                rect_offset - 2, rect_offset, rect_size, rect_size, 8, 8
+            )
         painter.end()
-        self.btn_color_preview.setIcon(QIcon(pix))
-        self.btn_color_preview.setIconSize(QSize(size, size))
+        self.btn_color_preview.setIcon(QIcon(button_pixmap))
+        self.btn_color_preview.setIconSize(QSize(button_size, button_size))
 
     def open_color_dialog(self):
         initial = (
@@ -1406,16 +1790,13 @@ class OutlineCheckApp(QMainWindow):
     def copy_selection(self):
         if not self.canvas_left.current_selection or not self.pixel_layers:
             return
-        selected_items = self.layers_list.selectedItems()
-        if not selected_items:
-            idx = 0
-        else:
-            idx = self.layers_list.indexOfTopLevelItem(selected_items[0])
+        items = self.layers_list.selectedItems()
+        idx = 0 if not items else self.layers_list.indexOfTopLevelItem(items[0])
 
         img = self.pixel_layers[idx]["image"]
         w, h = img.size
-
         self.clipboard_data = []
+
         for x, y in self.canvas_left.current_selection:
             if 0 <= x < w and 0 <= y < h:
                 color = img.getpixel((x, y))
@@ -1428,22 +1809,76 @@ class OutlineCheckApp(QMainWindow):
         selected_items = self.layers_list.selectedItems()
         if not selected_items:
             self.add_layer(name="Pasted Selection")
-            target_idx = 0
+            target_layer_index = 0
         else:
-            target_idx = self.layers_list.indexOfTopLevelItem(selected_items[0])
+            target_layer_index = self.layers_list.indexOfTopLevelItem(selected_items[0])
 
-        target_layer = self.pixel_layers[target_idx]
-        target_img = target_layer["image"]
-        for (x, y), color in self.clipboard_data:
-            if 0 <= x < target_img.width and 0 <= y < target_img.height:
-                target_img.putpixel((x, y), color)
-        if selected_items:
-            selected_items[0].setIcon(1, IconFactory.create_thumbnail(target_img))
-        else:
-            self.layers_list.topLevelItem(0).setIcon(
-                1, IconFactory.create_thumbnail(target_img)
-            )
+        target_layer = self.pixel_layers[target_layer_index]
+        target_image = target_layer["image"]
+        for (pixel_x, pixel_y), pixel_color in self.clipboard_data:
+            if 0 <= pixel_x < target_image.width and 0 <= pixel_y < target_image.height:
+                target_image.putpixel((pixel_x, pixel_y), pixel_color)
+        self._update_thumbnail_for_index(target_layer_index)
 
+        self.compose_final_image()
+        self.push_history()
+        self.refresh_analysis()
+        self.canvas_left.update()
+
+    def cut_selection(self):
+        self.copy_selection()
+        self.del_selection()
+
+    def _apply_to_selected_layer(self, func):
+        selected_items = self.layers_list.selectedItems()
+        if not selected_items or not self.pixel_layers:
+            return -1
+
+        layer_index = self.layers_list.indexOfTopLevelItem(selected_items[0])
+        layer_data = self.pixel_layers[layer_index]
+        func(layer_data, layer_index)
+        self._update_thumbnail_for_index(layer_index)
+        return layer_index
+
+    def _apply_to_selection_pixels(self, func):
+        if not self.canvas_left.current_selection or not self.pixel_layers:
+            return False
+
+        items = self.layers_list.selectedItems()
+        if not items:
+            return False
+
+        idx = self.layers_list.indexOfTopLevelItem(items[0])
+        img = self.pixel_layers[idx]["image"]
+        w, h = img.size
+        modified = False
+
+        for x, y in list(self.canvas_left.current_selection):
+            if 0 <= x < w and 0 <= y < h:
+                current_color = img.getpixel((x, y))
+                new_color = func(x, y, current_color)
+                if new_color is not None:
+                    img.putpixel((x, y), new_color)
+                    modified = True
+
+        if modified:
+            self._update_thumbnail_for_index(idx)
+        return modified
+
+    def _update_thumbnail_for_index(self, idx):
+        if (
+            0 <= idx < len(self.pixel_layers)
+            and self.layers_list.topLevelItemCount() > idx
+        ):
+            item = self.layers_list.topLevelItem(idx)
+            if item:
+                item.setIcon(
+                    1, IconFactory.create_thumbnail(self.pixel_layers[idx]["image"])
+                )
+
+    def del_selection(self):
+        if not self._apply_to_selection_pixels(lambda x, y, c: (0, 0, 0, 0)):
+            return
         self.compose_final_image()
         self.push_history()
         self.refresh_analysis()
@@ -1467,6 +1902,7 @@ class OutlineCheckApp(QMainWindow):
 
     def toggle_pixel_perfect(self, checked):
         self.pixel_perfect_mode = checked
+        self.canvas_left.update()
 
     def toggle_picker_mode(self):
         self._set_tool_mode(picker=not self.canvas_left.picker_mode)
@@ -1486,30 +1922,64 @@ class OutlineCheckApp(QMainWindow):
                 self.canvas_left.current_selection.clear()
                 self.canvas_left.update()
 
-    def _set_tool_mode(self, picker=False, brush=False, selection=False):
+    def toggle_pen_mode(self):
+        new_state = not self.canvas_left.pen_mode
+        self._set_tool_mode(pen=new_state)
+        if not new_state:
+            self.canvas_left.pen_points = []
+            self.canvas_left.update()
+
+    def _apply_tool_button_style(self, button, is_active):
+        if is_active:
+            button.setStyleSheet("background-color: #444; border: 1px solid white;")
+        else:
+            button.setStyleSheet("")
+
+    def _apply_tool_cursor(self, mode_name):
+        if not self.canvas_left.drag_mode:
+            cursor_map = {
+                "picker": Qt.CursorShape.CrossCursor,
+                "brush": Qt.CursorShape.PointingHandCursor,
+                "selection": Qt.CursorShape.CrossCursor,
+                "pen": Qt.CursorShape.CrossCursor,
+            }
+            cursor = cursor_map.get(mode_name, Qt.CursorShape.ArrowCursor)
+            self.canvas_left.setCursor(cursor)
+        self.update()
+
+    def _set_tool_mode(self, picker=False, brush=False, selection=False, pen=False):
         self.canvas_left.picker_mode = picker
         self.canvas_left.brush_mode = brush
         self.canvas_left.selection_mode = selection
+        self.canvas_left.pen_mode = pen
 
-        self.btn_eye_dropper.setStyleSheet(
-            "background-color: #444; border: 1px solid white;" if picker else ""
-        )
-        self.btn_brush.setStyleSheet(
-            "background-color: #444; border: 1px solid white;" if brush else ""
-        )
-        self.btn_select.setStyleSheet(
-            "background-color: #444; border: 1px solid white;" if selection else ""
-        )
+        self._apply_tool_button_style(self.btn_eye_dropper, picker)
+        self._apply_tool_button_style(self.btn_brush, brush)
+        self._apply_tool_button_style(self.btn_select, selection)
+        self._apply_tool_button_style(self.btn_pen, pen)
 
-        if not self.canvas_left.drag_mode:
-            if picker:
-                self.canvas_left.setCursor(Qt.CursorShape.CrossCursor)
-            elif brush:
-                self.canvas_left.setCursor(Qt.CursorShape.PointingHandCursor)
-            elif selection:
-                self.canvas_left.setCursor(Qt.CursorShape.CrossCursor)
-            else:
+        if picker:
+            self._apply_tool_cursor("picker")
+        elif brush:
+            self._apply_tool_cursor("brush")
+        elif selection:
+            self._apply_tool_cursor("selection")
+        elif pen:
+            self._apply_tool_cursor("pen")
+        else:
+            if not self.canvas_left.drag_mode:
                 self.canvas_left.setCursor(Qt.CursorShape.ArrowCursor)
+            self.update()
+
+    def _get_active_color_tuple(self):
+        if not self.replacement_color:
+            return (0, 0, 0, 0)
+        return (
+            self.replacement_color.red(),
+            self.replacement_color.green(),
+            self.replacement_color.blue(),
+            self.replacement_color.alpha(),
+        )
 
     def paint_pixel(self, x, y):
         items = self.layers_list.selectedItems()
@@ -1523,14 +1993,7 @@ class OutlineCheckApp(QMainWindow):
         if not (0 <= x < w and 0 <= y < h):
             return
 
-        color = (0, 0, 0, 0)
-        if self.replacement_color:
-            color = (
-                self.replacement_color.red(),
-                self.replacement_color.green(),
-                self.replacement_color.blue(),
-                self.replacement_color.alpha(),
-            )
+        color = self._get_active_color_tuple()
 
         if not self.pixel_perfect_mode:
             if target_img.getpixel((x, y)) == color:
@@ -1562,16 +2025,19 @@ class OutlineCheckApp(QMainWindow):
             and hasattr(self, "temp_stroke_layer")
             and self.temp_stroke_layer
         ):
-            items = self.layers_list.selectedItems()
-            if items:
-                idx = self.layers_list.indexOfTopLevelItem(items[0])
-                target_img = self.pixel_layers[idx]["image"]
-                self.pixel_layers[idx]["image"] = Image.alpha_composite(
-                    target_img, self.temp_stroke_layer
+            selected_items = self.layers_list.selectedItems()
+            if selected_items:
+                layer_index = self.layers_list.indexOfTopLevelItem(selected_items[0])
+                target_image = self.pixel_layers[layer_index]["image"]
+                self.pixel_layers[layer_index]["image"] = Image.alpha_composite(
+                    target_image, self.temp_stroke_layer
                 )
                 self.temp_stroke_layer = None
-                items[0].setIcon(
-                    1, IconFactory.create_thumbnail(self.pixel_layers[idx]["image"])
+                selected_items[0].setIcon(
+                    1,
+                    IconFactory.create_thumbnail(
+                        self.pixel_layers[layer_index]["image"]
+                    ),
                 )
 
         self.compose_final_image()
@@ -1581,21 +2047,25 @@ class OutlineCheckApp(QMainWindow):
     def update_canvas_views_fast(self):
         if not self.pixel_layers:
             return
-        base = Image.new("RGBA", self.pixel_layers[0]["image"].size, (0, 0, 0, 0))
+        composed_image = Image.new(
+            "RGBA", self.pixel_layers[0]["image"].size, (0, 0, 0, 0)
+        )
         for layer in reversed(self.pixel_layers):
             if layer["visible"]:
-                base = Image.alpha_composite(base, layer["image"])
+                composed_image = Image.alpha_composite(composed_image, layer["image"])
         if (
             self.pixel_perfect_mode
             and hasattr(self, "temp_stroke_layer")
             and self.temp_stroke_layer
         ):
-            base = Image.alpha_composite(base, self.temp_stroke_layer)
+            composed_image = Image.alpha_composite(
+                composed_image, self.temp_stroke_layer
+            )
 
-        self.current_img = base
-        pix = self.pil_to_qimage(self.current_img)
+        self.current_img = composed_image
+        qimage_data = self.pil_to_qimage(self.current_img)
         self.canvas_left.set_image(
-            QPixmap.fromImage(pix),
+            QPixmap.fromImage(qimage_data),
             self.analysis_result.pixel_to_layers,
             reset_view=False,
         )
@@ -1627,13 +2097,9 @@ class OutlineCheckApp(QMainWindow):
             return
 
         self._save_tree_state()
-
-        fill_color = [0, 0, 0, 0]
-        if self.replacement_color:
-            c = self.replacement_color
-            fill_color = [c.red(), c.green(), c.blue(), c.alpha()]
-
+        fill_color = self._get_active_color_tuple()
         img_np = np.array(self.current_img)
+
         for lid in ids:
             layer = self.analysis_result.layers[lid]
             img_np[layer.y, layer.x] = fill_color
@@ -1644,9 +2110,9 @@ class OutlineCheckApp(QMainWindow):
 
     def push_history(self, _unused_img=None):
         self.history = self.history[: self.history_index + 1]
-        snapshot = []
+        layers_snapshot = []
         for layer in self.pixel_layers:
-            snapshot.append(
+            layers_snapshot.append(
                 {
                     "name": layer["name"],
                     "image": layer["image"].copy(),
@@ -1655,53 +2121,53 @@ class OutlineCheckApp(QMainWindow):
                 }
             )
 
-        self.history.append(snapshot)
+        self.history.append(layers_snapshot)
         if len(self.history) > 32:
             self.history.pop(0)
         else:
             self.history_index += 1
 
     def _history_move(self, direction):
-        new_index = self.history_index + direction
-        if 0 <= new_index < len(self.history):
-            self.history_index = new_index
-            snapshot = self.history[self.history_index]
+        new_history_index = self.history_index + direction
+        if 0 <= new_history_index < len(self.history):
+            self.history_index = new_history_index
+            history_snapshot = self.history[self.history_index]
             self.pixel_layers = []
-            for layer in snapshot:
+            for layer_snapshot in history_snapshot:
                 self.pixel_layers.append(
                     {
-                        "name": layer["name"],
-                        "image": layer["image"].copy(),
-                        "visible": layer["visible"],
-                        "locked": layer["locked"],
+                        "name": layer_snapshot["name"],
+                        "image": layer_snapshot["image"].copy(),
+                        "visible": layer_snapshot["visible"],
+                        "locked": layer_snapshot["locked"],
                     }
                 )
             self.update_layers_ui()
             self.compose_final_image()
 
     def _save_tree_state(self):
-        self._saved_state = {}
+        self._saved_tree_state = {}
         root = self.layer_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            parent = root.child(i)
-            key = parent.text(0)
-            self._saved_state[key] = {
-                "expanded": parent.isExpanded(),
-                "checked": parent.checkState(0),
+        for parent_index in range(root.childCount()):
+            parent_item = root.child(parent_index)
+            parent_text_key = parent_item.text(0)
+            self._saved_tree_state[parent_text_key] = {
+                "expanded": parent_item.isExpanded(),
+                "checked": parent_item.checkState(0),
             }
 
     def _restore_tree_state(self):
-        if not hasattr(self, "_saved_state"):
+        if not hasattr(self, "_saved_tree_state"):
             return
         self.layer_tree.blockSignals(True)
         root = self.layer_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            parent = root.child(i)
-            key = parent.text(0)
-            if key in self._saved_state:
-                st = self._saved_state[key]
-                parent.setExpanded(st["expanded"])
-                parent.setCheckState(0, st["checked"])
+        for parent_index in range(root.childCount()):
+            parent_item = root.child(parent_index)
+            parent_text_key = parent_item.text(0)
+            if parent_text_key in self._saved_tree_state:
+                saved_state = self._saved_tree_state[parent_text_key]
+                parent_item.setExpanded(saved_state["expanded"])
+                parent_item.setCheckState(0, saved_state["checked"])
         self.layer_tree.blockSignals(False)
 
     def open_image(self):
