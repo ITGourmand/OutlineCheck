@@ -361,8 +361,8 @@ class IconFactory:
 
 
 class ImageAnalyzer:
-    CL_PATTERN_1 = np.array([[2, 1, 1], [2, 3, 1], [2, 2, 2]])
-    CL_PATTERN_2 = np.array([[1, 1, 2], [1, 3, 2], [2, 2, 2]])
+    CL_PATTERN_1 = np.array([[0, 1, 1], [0, 3, 1], [0, 2, 2]])
+    CL_PATTERN_2 = np.array([[1, 1, 0], [1, 3, 0], [2, 2, 0]])
     OT_PATTERN = np.array([[2, 1, 0], [2, 3, 1], [2, 1, 0]])
 
     BASE_PATTERN = np.array([[2, 1, 0], [2, 3, 1], [0, 2, 2]])
